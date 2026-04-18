@@ -1,0 +1,38 @@
+# Build artifacts
+*.o
+*.a
+*.d
+
+# Verilator output
+obj_dir/
+obj_dir_*/
+Vsaturn_cpu*
+
+# Standalone tracer binaries (sim/Makefile)
+sim/csim
+sim/vsim
+sim/x48_sim
+
+# Test-harness generator
+test_harness/generate_tests
+test_harness/test_vectors.txt
+
+# Verilog testbench vectors (regenerated from test_harness/)
+rtl/test_vectors.dat
+
+# Runtime traces
+*.log
+sim/ram
+sim/state
+
+# HP48 ROM image — licensing is unclear (see x48ng README).
+# Drop your own ROM here; the sim Makefiles look for /rom at repo root.
+/rom
+
+# Editor / IDE
+.vscode/
+.idea/
+.claude/
+*.swp
+*~
+.DS_Store

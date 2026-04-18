@@ -1,0 +1,47 @@
+# prog2.hex — more exhaustive cross-cutting exercise.
+# Covers: LC, LA, field arithmetic (hex & BCD), compare+branch, GOSUB+RTN,
+# DAT0 memory store+recall, shifts, status bits.
+
+# ── init: SETHEX, P=0, LC some data ──
+0 4                    # SETHEX                         pc=0..1
+2 0                    # P=0                             pc=2..3
+3 4 1 2 3 4 5          # LC 5 nibbles "12345" into C     pc=4..A
+
+# ── hex arithmetic: add then sub ──
+D 6                    # A = C                           pc=B..C
+C 0                    # A = A + B  (B=0)                pc=D..E
+E 0                    # A = A - B                       pc=F..10
+
+# ── SETDEC, BCD arithmetic ──
+0 5                    # SETDEC                          pc=11..12
+D 2                    # C = A                           pc=13..14
+C 2                    # C = C + A (BCD)                 pc=15..16
+
+# ── back to HEX ──
+0 4                    # SETHEX                          pc=17..18
+
+# ── D0 assignment + DAT0 store + DAT0 recall ──
+1 A 0 0 4 0            # D0 = load 4-nib 0040 → D0[15:0]=0x0040   pc=19..1E
+1 4 0                  # DAT0 = A (W-field)              pc=1F..21
+1 4 2                  # A = DAT0 (W-field)              pc=22..24
+
+# ── shifts ──
+F 0                    # ASL (A-field)                   pc=25..26
+F 4                    # ASR (A-field)                   pc=27..28
+
+# ── compare + branch: A = C so ?A=C W-field branch taken ──
+D 6                    # A = C                           pc=29..2A
+9 7 2 0 6              # ?A=C W + branch disp=0x06       pc=2B..2F
+                       #   taken → pc=2B+3+6=0x34
+# fallthrough at 0x30 (not executed)
+0 0 0 0                # padding
+
+# branch target at 0x34:
+C C                    # A = A - 1 (A-field)             pc=34..35
+C C                    # A = A - 1                       pc=36..37
+
+# ── RTN with carry set (expects empty stack → PC becomes RSTK[0]=0) ──
+0 2                    # RTNSC                           pc=38..39
+
+# pad
+0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0

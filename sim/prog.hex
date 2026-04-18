@@ -1,0 +1,33 @@
+# sim/prog.hex — exercises arithmetic, compare, branch, field ops.
+# One hex nibble per whitespace-separated token; # starts a line comment.
+# Memory is loaded LSN-first: token 0 goes to mem[0] (= nibble PC reads first).
+
+# ── block 1: SETHEX, load C constant, add into A ──────────────
+0 4               # SETHEX                  pc = 0..1
+2 0               # P = 0                   pc = 2..3
+3 4 E D C B A     # LC 5 nib "EDCBA"        pc = 4..A  (C[0..4] = E D C B A → C = 0xABCDE)
+C A               # A = A + C (A-field)     pc = B..C
+# ── block 2: field arithmetic ─────────────────────────────────
+E 0               # A = A - B (A-field)     pc = D..E
+D 6               # C = A (A-field)         pc = F..10
+D 0               # A = 0 (A-field)         pc = 11..12
+# ── block 3: shifts ───────────────────────────────────────────
+F 0               # ASL (A shift left A-fld) pc = 13..14
+F 2               # CSL                      pc = 15..16
+# ── block 4: compares (carry-setting only) ────────────────────
+9 7 0 0 0         # ?A=B W-field + branch   pc = 17..1B  (disp = 0 → RTN/fallthrough)
+# ── block 5: status manipulation ──────────────────────────────
+8 4 5             # ST=0 5                  pc = 1C..1E
+8 5 3             # ST=1 3                  pc = 1F..21
+# ── block 6: INC / DEC / NEG ──────────────────────────────────
+D 4               # A = A + 1 (A-field)     pc = 22..23
+C C               # A = A - 1 (A-field)     pc = 24..25
+F 8               # A = -A (A-field)        pc = 26..27
+F C               # A = -A - 1 (A-field)    pc = 28..29
+# ── block 7: register moves ───────────────────────────────────
+D 4               # A = B                   pc = 2A..2B
+D 8               # B = A                   pc = 2C..2D
+D C               # ABEX                    pc = 2E..2F
+# ── block 8: short jump forward 2 nibbles ─────────────────────
+# end of program (pad zeros so we can run a few more steps into NOPs)
+0 0 0 0 0 0 0 0 0 0

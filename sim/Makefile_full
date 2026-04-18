@@ -1,0 +1,110 @@
+#
+# sim/Makefile_full — build the full SDL GUI + peripheral x48ng stack
+# with a --core=<c|rtl|lockstep> selector that swaps the CPU in place.
+#
+# Usage:
+#   make -f Makefile_full               # builds ./x48_sim
+#   ./x48_sim --core=c    ../rom        # x48ng's original CPU
+#   ./x48_sim --core=rtl  ../rom        # Verilog saturn_cpu.v driving x48ng peripherals
+#   ./x48_sim --core=lockstep ../rom    # both cores step together, abort on divergence
+#
+# We don't touch x48ng sources. The C reference's step_instruction is
+# replaced via linker --wrap with a dispatcher (step_dispatch.c).
+
+X48     := ../x48ng
+RTL     := ../rtl
+VER     := /tools/verilator/v5.046/bin/verilator
+VINC    := /tools/verilator/v5.046/share/verilator/include
+
+# ── x48ng's build flags (copied from x48ng/Makefile) ─────────────────
+PKG            := pkg-config
+GLIB_CFLAGS    := $(shell $(PKG) --cflags glib-2.0)
+GLIB_LDLIBS    := $(shell $(PKG) --libs glib-2.0)
+GTK_CFLAGS     := $(shell $(PKG) --cflags gtk4) -DHAS_GTK=1
+GTK_LDLIBS     := $(shell $(PKG) --libs gtk4)
+LUA_CFLAGS     := $(shell $(PKG) --cflags lua5.4)
+LUA_LDLIBS     := $(shell $(PKG) --libs lua5.4)
+NCURSES_CFLAGS := $(shell $(PKG) --cflags ncursesw readline) -DNCURSES_WIDECHAR=1 -DHAS_NCURSES=1
+NCURSES_LDLIBS := $(shell $(PKG) --libs ncursesw readline)
+SDL_CFLAGS     := $(shell $(PKG) --cflags sdl3) -DHAS_SDL=1
+SDL_LDLIBS     := $(shell $(PKG) --libs sdl3)
+
+X48_CFLAGS  = -std=gnu2x -O2 -Wall -Wno-unused-parameter -Wno-pointer-arith \
+              -Wno-overflow -I$(X48)/src -I$(X48)/src/core \
+              $(LUA_CFLAGS) $(GLIB_CFLAGS) $(GTK_CFLAGS) $(NCURSES_CFLAGS) $(SDL_CFLAGS) \
+              -D_GNU_SOURCE=1 -DVERSION_MAJOR=1 -DVERSION_MINOR=0 -DPATCHLEVEL=1 \
+              -DDATADIR=\"/usr/share/x48ng\"
+
+X48_LDLIBS  = -L$(X48)/src/ui4x -lui4x \
+              -lz -lm $(LUA_LDLIBS) $(GLIB_LDLIBS) $(GTK_LDLIBS) $(NCURSES_LDLIBS) $(SDL_LDLIBS)
+
+X48_OBJS    = $(X48)/src/options.o $(X48)/src/romio.o \
+              $(X48)/src/core/debugger.o $(X48)/src/core/emulate.o \
+              $(X48)/src/core/init.o $(X48)/src/core/persistence.o \
+              $(X48)/src/core/memory.o $(X48)/src/core/registers.o \
+              $(X48)/src/core/timers.o $(X48)/src/core/serial.o \
+              $(X48)/src/emulator_api.o
+
+# ── Verilator: build the saturn_cpu model with public-flat-rw so we can
+#    sync state from C++ ─────────────────────────────────────────────
+VFLAGS      := --cc --public-flat-rw --timing \
+               -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
+               -Wno-LATCH -Wno-SYMRSVDWORD -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
+               -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
+               --top-module saturn_cpu -I$(RTL)
+
+VDIR        := obj_dir_v_full
+VLIB        := $(VDIR)/Vsaturn_cpu__ALL.a
+
+SIM_OBJS    := sim_main.o sim_step.o sim_vcore.o
+
+CC          := gcc
+CXX         := g++
+CXXFLAGS    := -std=c++17 -O2 -I$(VDIR) -I$(VINC) -I$(VINC)/vltstd -I. -I$(X48)/src -I$(X48)/src/core $(LUA_CFLAGS) $(GLIB_CFLAGS)
+VERIL_SRCS  := $(VINC)/verilated.cpp $(VINC)/verilated_timing.cpp $(VINC)/verilated_threads.cpp
+
+all: x48_sim
+
+# Make sure x48ng objects exist (defer to its own Makefile for correctness).
+# Promote `instructions` (static in emulate.c) to a global symbol so
+# step_dispatch.c can bump it on RTL-core steps. Without this the x48ng
+# schedule() never advances timer2 under --core=rtl and the ROM idles in a
+# keyboard-scan loop reading a frozen MMIO value. Done via objcopy to keep
+# the x48ng submodule pristine (no source patch needed).
+$(X48_OBJS): x48ng-build ;
+.PHONY: x48ng-build
+x48ng-build:
+	$(MAKE) -C $(X48)
+	objcopy --globalize-symbol=instructions $(X48)/src/core/emulate.o
+
+# Verilator model as a library (one-shot per RTL change).
+$(VLIB): $(RTL)/saturn_cpu.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v
+	$(VER) $(VFLAGS) --Mdir $(VDIR) $(RTL)/saturn_cpu.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v
+	$(MAKE) -C $(VDIR) -f Vsaturn_cpu.mk
+
+# Simulator objects.
+sim_main.o: x48_main.c sim_core.h
+	$(CC) $(X48_CFLAGS) -c x48_main.c -o $@
+
+sim_step.o: step_dispatch.c sim_core.h
+	$(CC) $(X48_CFLAGS) -c step_dispatch.c -o $@
+
+sim_vcore.o: verilog_core.cpp sim_core.h $(VLIB)
+	$(CXX) $(CXXFLAGS) -DVM_TIMING=1 -fcoroutines -c verilog_core.cpp -o $@
+
+VERIL_OBJS  := $(VDIR)/verilated.o $(VDIR)/verilated_timing.o $(VDIR)/verilated_threads.o
+$(VERIL_OBJS): $(VLIB)
+
+# Final link. Linker --wrap routes step_instruction through our dispatcher.
+x48_sim: $(SIM_OBJS) $(VLIB) $(X48_OBJS)
+	$(CXX) -std=c++17 $(X48_CFLAGS) \
+	    -Wl,--wrap=step_instruction \
+	    -Wl,--wrap=set_accesstime \
+	    -o $@ $(SIM_OBJS) $(X48_OBJS) $(VLIB) $(VERIL_OBJS) \
+	    -pthread -latomic $(X48_LDLIBS) -ltinfo
+
+clean:
+	rm -f x48_sim $(SIM_OBJS)
+	rm -rf $(VDIR)
+
+.PHONY: all clean
