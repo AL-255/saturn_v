@@ -47,7 +47,8 @@ X48_OBJS    = $(X48)/src/options.o $(X48)/src/romio.o \
 
 # ── Verilator: build the saturn_cpu model with public-flat-rw so we can
 #    sync state from C++ ─────────────────────────────────────────────
-VFLAGS      := --cc --public-flat-rw --timing \
+# NB: --timing is not needed since the RTL is now synthesizable (no #0s).
+VFLAGS      := --cc --public-flat-rw \
                -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT -Wno-CASEINCOMPLETE \
                -Wno-LATCH -Wno-SYMRSVDWORD -Wno-BLKANDNBLK -Wno-MULTIDRIVEN \
                -Wno-UNUSEDSIGNAL -Wno-UNUSEDPARAM \
@@ -77,9 +78,11 @@ x48ng-build:
 	$(MAKE) -C $(X48)
 	objcopy --globalize-symbol=instructions $(X48)/src/core/emulate.o
 
+RTL_SRCS := $(RTL)/saturn_cpu.v $(RTL)/saturn_exec.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v
+
 # Verilator model as a library (one-shot per RTL change).
-$(VLIB): $(RTL)/saturn_cpu.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v
-	$(VER) $(VFLAGS) --Mdir $(VDIR) $(RTL)/saturn_cpu.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v
+$(VLIB): $(RTL_SRCS)
+	$(VER) $(VFLAGS) --Mdir $(VDIR) $(RTL_SRCS)
 	$(MAKE) -C $(VDIR) -f Vsaturn_cpu.mk
 
 # Simulator objects.
@@ -90,9 +93,10 @@ sim_step.o: step_dispatch.c sim_core.h
 	$(CC) $(X48_CFLAGS) -c step_dispatch.c -o $@
 
 sim_vcore.o: verilog_core.cpp sim_core.h $(VLIB)
-	$(CXX) $(CXXFLAGS) -DVM_TIMING=1 -fcoroutines -c verilog_core.cpp -o $@
+	$(CXX) $(CXXFLAGS) -fcoroutines -c verilog_core.cpp -o $@
 
-VERIL_OBJS  := $(VDIR)/verilated.o $(VDIR)/verilated_timing.o $(VDIR)/verilated_threads.o
+# No verilated_timing.o since the synthesizable RTL doesn't use delays.
+VERIL_OBJS  := $(VDIR)/verilated.o $(VDIR)/verilated_threads.o
 $(VERIL_OBJS): $(VLIB)
 
 # Final link. Linker --wrap routes step_instruction through our dispatcher.

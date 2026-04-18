@@ -35,9 +35,11 @@ all: csim vsim
 csim: csim.c $(CORE_SRCS)
 	$(CC) $(CFLAGS) -o $@ csim.c $(CORE_SRCS)
 
-vsim: vsim.cpp $(RTL)/saturn_cpu.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v
+RTL_SRCS := $(RTL)/saturn_cpu.v $(RTL)/saturn_exec.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v
+
+vsim: vsim.cpp $(RTL_SRCS)
 	$(VERILATOR) $(VFLAGS) --Mdir obj_dir_v -CFLAGS "$(CXXFLAGS)" \
-	    $(RTL)/saturn_cpu.v $(RTL)/saturn_alu.v $(RTL)/saturn_field.v \
+	    $(RTL_SRCS) \
 	    vsim.cpp
 	cp obj_dir_v/Vsaturn_cpu ./vsim
 
