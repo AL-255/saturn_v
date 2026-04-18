@@ -25,6 +25,9 @@ rtl/test_vectors.dat
 sim/ram
 sim/state
 
+# Generated block diagrams
+rtl/diagram/
+
 # HP48 ROM image — licensing is unclear (see x48ng README).
 # Drop your own ROM here; the sim Makefiles look for /rom at repo root.
 /rom
