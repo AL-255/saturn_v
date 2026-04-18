@@ -70,7 +70,112 @@ Instruction lengths are in **nibbles** (bytes = nibbles / 2).
 
 ---
 
-## 4. Group 0 — Miscellaneous (2 nibbles each)
+## 4. Instruction encoding chart
+
+### 4.1 First-nibble opcode map
+
+What the **first nibble `n0`** alone tells you: the group, the typical
+total length, and whether the next nibbles finish the opcode (`op`) or
+are operand data (`fs`, `dd`, `ddd`, `aaaaa`, `kk…`).
+
+| `n0` | Group                                        | n1 role | Full-op length (nibbles) |
+|:---:|----------------------------------------------|---------|-------------------------|
+| `0` | Misc. (returns, hex/dec, ST, PSTAT, P±1, RTI) | `op`    | 2 (`0E` → 4)            |
+| `1` | Moves, DAT access, D0/D1 load / ±imm          | `op`    | 3..7                    |
+| `2` | `P=n`                                         | `n`     | 2                       |
+| `3` | `LC` — load (`n1+1`) nibbles into C           | count   | `2 + (n1+1)` = 3..18    |
+| `4` | `GOC ±dd`                                     | disp lo | 3                       |
+| `5` | `GONC ±dd`                                    | disp lo | 3                       |
+| `6` | `GOTO ±ddd`                                   | disp lo | 4                       |
+| `7` | `GOSUB ±ddd`                                  | disp lo | 4                       |
+| `8` | I/O, status, compares, long branches          | `op`    | 3..22                   |
+| `9` | compare+branch over field `fs`                | `fs`    | 5                       |
+| `A` | field ADD/DEC or ZERO/COPY/EXCH (`fs<8` / `≥8`)| `fs`    | 3                       |
+| `B` | field SUB/INC or SHL/SHR/NEG                  | `fs`    | 3                       |
+| `C` | A-field ADD/DEC                               | `op`    | 2                       |
+| `D` | A-field ZERO/COPY/EXCH                        | `op`    | 2                       |
+| `E` | A-field SUB/INC                               | `op`    | 2                       |
+| `F` | A-field SHL/SHR/NEG                           | `op`    | 2                       |
+
+### 4.2 Group-0 opcode map (second nibble `n1`)
+
+| `n1`  | `0`   | `1`  | `2`   | `3`   | `4`     | `5`     | `6`    | `7`    | `8`   | `9`  | `A`  | `B`   | `C`   | `D`   | `E`      | `F` |
+|-------|-------|------|-------|-------|---------|---------|--------|--------|-------|------|------|-------|-------|-------|----------|-----|
+| Mnem. |RTNSXM|RTN  |RTNSC |RTNCC |SETHEX  |SETDEC  |RSTK=C |C=RSTK |CLRST |C=ST |ST=C |CSTEX |P=P+1 |P=P-1 |AND/OR fs |RTI |
+
+### 4.3 Group-8 opcode map (second nibble `n1`)
+
+| `n1`  | `0`         | `1`       | `2`       | `3`        | `4`       | `5`       | `6`          | `7`          | `8`          | `9`          | `A`          | `B`          | `C`           | `D`          | `E`          | `F`          |
+|-------|-------------|-----------|-----------|------------|-----------|-----------|--------------|--------------|--------------|--------------|--------------|--------------|---------------|--------------|--------------|--------------|
+|Mnem.  | I/O+service | shifts/field | CLRSTmask | ?ST=1 msk | ST=0 n   | ST=1 n   | ?ST=0 n+br | ?ST=1 n+br | ?P#n +br   | ?P=n +br   | ?A=B A +br | ?A>B A +br | GOLONG ±dddd | GOTO abs   | GOSUBL ±dddd | GOSBVL abs |
+|Length | 3..22       | 3..6      | 3         | 5          | 3         | 3         | 5            | 5            | 5            | 5            | 5            | 5            | 6             | 7            | 6            | 7            |
+
+### 4.4 Encoding formats (nibble layout)
+
+Each row shows the nibbles laid out left-to-right as fetched from
+memory (`n0` first). Lowercase letters mark operand nibbles; uppercase
+letters mark fixed-opcode nibbles.
+
+    Fmt  │ Layout                            │ Length │ Example                     │ Instructions
+    ─────┼───────────────────────────────────┼────────┼─────────────────────────────┼────────────────────────────────
+    A1   │ [n0][n1]                          │   2    │ `01`   = RTN                │ Most of group 0, 2, C, D, E, F
+    A2   │ [0][E][fs][op]                    │   4    │ `0E 7 0` = A=A&B W          │ Group 0E field AND/OR
+    B1   │ [n0][n1][n2]                      │   3    │ `A 7 0` = A=A+B W           │ Groups 1x (most), 4/5, 80/82,
+         │                                   │        │                             │   84/85, 9/A/B
+    B2   │ [1][5][op3][op4]                  │   4    │ `1 5 F C` = C=DAT1 13nib    │ DAT recall/store 4-nib form
+    C1   │ [6][ddd]                          │   4    │ `6 F F 0` = GOTO -16        │ GOTO  (3-nib signed disp)
+    C1'  │ [7][ddd]                          │   4    │ `7 0 1 0` = GOSUB +16       │ GOSUB (3-nib signed disp)
+    D1   │ [8][0][op][n3]                    │   4    │ `8 0 C 5` = C=P 5           │ 80Cx / 80Dx / 80Fx one-param
+    D2   │ [8][0][8][n3]...                  │ 4..22  │ see below (0808x family)    │ INTON, RSI, LA, BUSCB, ABIT*,
+         │                                   │        │                             │   CBIT*, ?ABIT, ?CBIT, PC=(A),
+         │                                   │        │                             │   BUSCD, PC=(C), INTOFF
+    D3   │ [8][1][op][...]                   │ 3..6   │ `8 1 8 F 2 F` = C=C+16 A    │ 81x shifts / field ops
+    E1   │ [8][3..9][n2][n3][n4]             │   5    │ `8 6 0 F E` = ?ST=0 0 -2    │ ST / P bit-tests + branch
+    E2   │ [8][A..B][n2][n3][n4]             │   5    │ `8 A 2 0 1` = ?A=C A +1     │ A-field compares + branch
+    F1   │ [8][C][dddd]                      │   6    │ `8 C 0 0 0 F` = GOLONG …    │ GOLONG  (4-nib signed)
+    F1'  │ [8][E][dddd]                      │   6    │ `8 E 0 0 2 0` = GOSUBL …    │ GOSUBL  (4-nib signed)
+    G1   │ [8][D][aaaaa]                     │   7    │ `8 D 0 0 0 4 0` = GOTO abs  │ GOTO  absolute
+    G1'  │ [8][F][aaaaa]                     │   7    │ `8 F 0 1 0 0 0` = GOSBVL … │ GOSBVL absolute
+    H1   │ [9][fs][op][n3][n4]               │   5    │ `9 0 2 0 3` = ?A=C P +3     │ Group-9 compare+branch
+    I1   │ [1][6..8,C][n2]                   │   3    │ `1 6 7` = D0=D0+8           │ D0/D1 ±imm
+    I2   │ [1][9..B,D..F][k1 k0 …]           │ 4/6/7  │ `1 B 0 1 2 3 4` = D0=(5)…   │ D0/D1 immediate load
+    J1   │ [3][n1][k0 k1 …]                  │ 3..18  │ `3 0 5` = LC(1) 5           │ LC load-constant to C
+    J2   │ [8][0][8][2][n4][k0 k1 …]         │ 6..22  │ `8 0 8 2 2 1 2 3` = LA(3)   │ LA load-constant to A
+
+### 4.5 Field-code encoding (3 bits, `fs`)
+
+When an opcode embeds a 4-bit `fs` nibble (e.g. group 9/A/B, `81` sub-
+dispatch, `0E` field AND/OR), only bits 2:0 pick the field; bit 3
+selects a secondary sub-table within the same opcode (`A`/`B`/`9`:
+`fs≥8` → ordered compare / shift-neg / ordered branch family; `A`/`B`
+`fs<8` → arithmetic/move family).
+
+| `fs[2:0]` | Field | Range       |
+|:---:|-------|-------------|
+| `0` | `P`   | `P..P`      |
+| `1` | `WP`  | `0..P`      |
+| `2` | `XS`  | `2..2`      |
+| `3` | `X`   | `0..2`      |
+| `4` | `S`   | `15..15`    |
+| `5` | `M`   | `3..14`     |
+| `6` | `B`   | `0..1`      |
+| `7` | `W`   | `0..15`     |
+
+### 4.6 Displacement sign-extension
+
+| Encoding | Field | Bits | Range | Branches that use it |
+|----------|-------|-----:|-------|----------------------|
+| `dd`     | 2 nib (8 b)  | 8  | -128..+127 | `GOC`, `GONC`, all 8x branch+test |
+| `ddd`    | 3 nib (12 b) | 12 | -2048..+2047 | `GOTO`, `GOSUB` |
+| `dddd`   | 4 nib (16 b) | 16 | -32768..+32767 | `GOLONG`, `GOSUBL` |
+| `aaaaa`  | 5 nib (20 b) | 20 | 0..0xFFFFF (absolute) | `GOTO abs`, `GOSBVL` |
+
+For conditional branches, a displacement of **`0` is reserved** and
+treated as `RTN` (pop `RSTK` instead of jumping).
+
+---
+
+## 5. Group 0 — Miscellaneous (2 nibbles each)
 
 | Opcode | Mnemonic | Operation | Flags |
 |--------|----------|-----------|-------|
@@ -107,7 +212,7 @@ Logical AND / OR on a field; **carry is not updated**.
 
 ---
 
-## 5. Group 1 — Register / pointer / memory moves
+## 6. Group 1 — Register / pointer / memory moves
 
 ### 10x / 11x / 12x (3 nibbles) — R↔{A,C} full W-field
 
@@ -181,7 +286,7 @@ Same as 19/1A/1B but target is `D1`.
 
 ---
 
-## 6. Group 2 — `P=n` (2 nibbles)
+## 7. Group 2 — `P=n` (2 nibbles)
 
 | Opcode | Mnemonic | Operation |
 |--------|----------|-----------|
@@ -189,7 +294,7 @@ Same as 19/1A/1B but target is `D1`.
 
 ---
 
-## 7. Group 3 — `LC n+1` (variable length)
+## 8. Group 3 — `LC n+1` (variable length)
 
 Load `n+1` nibbles into `C`, starting at `C[P]` and wrapping.
 `P` is unchanged.
@@ -200,7 +305,7 @@ Load `n+1` nibbles into `C`, starting at `C[P]` and wrapping.
 
 ---
 
-## 8. Groups 4 / 5 — Conditional jump (3 nibbles)
+## 9. Groups 4 / 5 — Conditional jump (3 nibbles)
 
 8-bit signed displacement `dd = {n2, n1}`. An all-zero `dd` triggers
 a return-stack pop (synthesised `RTN`).
@@ -215,7 +320,7 @@ regardless of carry).
 
 ---
 
-## 9. Groups 6 / 7 — Unconditional branch / call (4 nibbles)
+## 10. Groups 6 / 7 — Unconditional branch / call (4 nibbles)
 
 12-bit signed displacement `ddd = {n3, n2, n1}`.
 
@@ -228,7 +333,7 @@ regardless of carry).
 
 ---
 
-## 10. Group 8 — I/O, status, compares, long branches
+## 11. Group 8 — I/O, status, compares, long branches
 
 ### 80x (3 or 4 nibbles) — I/O and service
 
@@ -364,7 +469,7 @@ Displacement `{n4,n3}`, sign-extended 8-bit; `dd=00` → RTN.
 
 ---
 
-## 11. Group 9 — Compare+branch with arbitrary field (5 nibbles)
+## 12. Group 9 — Compare+branch with arbitrary field (5 nibbles)
 
 Form: `9 fs op dd`.
 
@@ -376,7 +481,7 @@ If `CARRY` set after the compare: `PC += sext8(dd) + 3` (or RTN on
 
 ---
 
-## 12. Group A — Field ADD/DEC + MOVE (3 nibbles each)
+## 13. Group A — Field ADD/DEC + MOVE (3 nibbles each)
 
 Form: `A fs op`.
 
@@ -408,7 +513,7 @@ Form: `A fs op`.
 
 ---
 
-## 13. Group B — Field SUB/INC + SHL/SHR/NEG (3 nibbles each)
+## 14. Group B — Field SUB/INC + SHL/SHR/NEG (3 nibbles each)
 
 Form: `B fs op`.
 
@@ -442,7 +547,7 @@ Form: `B fs op`.
 
 ---
 
-## 14. Group C — A-field ADD/DEC (2 nibbles)
+## 15. Group C — A-field ADD/DEC (2 nibbles)
 
 Same sub-table as Group A/`fs<8` but with the field fixed to `A` and
 only `n1` selects the op. Always 2 nibbles, CARRY updated.
@@ -460,7 +565,7 @@ only `n1` selects the op. Always 2 nibbles, CARRY updated.
 
 ---
 
-## 15. Group D — A-field ZERO / COPY / EXCH (2 nibbles)
+## 16. Group D — A-field ZERO / COPY / EXCH (2 nibbles)
 
 Same as Group A/`fs≥8`, field fixed to `A`.
 
@@ -477,7 +582,7 @@ Same as Group A/`fs≥8`, field fixed to `A`.
 
 ---
 
-## 16. Group E — A-field SUB/INC (2 nibbles)
+## 17. Group E — A-field SUB/INC (2 nibbles)
 
 Same as Group B/`fs<8`, field fixed to `A`.
 
@@ -494,7 +599,7 @@ Same as Group B/`fs<8`, field fixed to `A`.
 
 ---
 
-## 17. Group F — A-field SHL/SHR/NEG (2 nibbles)
+## 18. Group F — A-field SHL/SHR/NEG (2 nibbles)
 
 Same as Group B/`fs≥8`, field fixed to `A`.
 
@@ -511,7 +616,7 @@ Same as Group B/`fs≥8`, field fixed to `A`.
 
 ---
 
-## 18. Decimal vs hex mode
+## 19. Decimal vs hex mode
 
 BCD is the Saturn's default numerical mode (`HEXMODE=0`). In that
 mode, the ALU arithmetic operations that touch a field (`ADD`, `SUB`,
@@ -522,7 +627,7 @@ hex** to match the C reference's `add_register_constant`.
 
 ---
 
-## 19. Opcodes not implemented in pure RTL
+## 20. Opcodes not implemented in pure RTL
 
 These instructions depend on state that lives in `saturn_t` outside the
 CPU — memory-mapping configuration, keyboard scan, bus commands,
@@ -546,7 +651,7 @@ core.
 
 ---
 
-## 20. Reference
+## 21. Reference
 
 - `x48ng/src/core/emulate.c` — canonical C implementation (`step_instruction_XX`).
 - `x48ng/src/core/registers.c` — field arithmetic (`add_register`, `sub_register`, etc.).
