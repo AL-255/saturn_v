@@ -39,3 +39,5 @@ rtl/diagram/
 *.swp
 *~
 .DS_Store
+
+resume.sh
