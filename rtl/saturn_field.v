@@ -1,13 +1,34 @@
-// saturn_field.v — field code -> (start_nib, end_nib) decoder
-// Ref: x48ng registers.c start_fields[] / end_fields[].
-// -1 entries in the C tables mean "use P register".
+/**
+ * @file saturn_field.v
+ * @brief Decodes a 5-bit Saturn field code into its (start_nib, end_nib)
+ *        inclusive nibble range.
+ *
+ * The HP Saturn CPU operates on 64-bit registers as 16 nibbles; most
+ * arithmetic, logic, and data-move instructions apply only to a
+ * contiguous slice of those nibbles called a "field". The field code
+ * table mirrors the `start_fields[]` / `end_fields[]` arrays in
+ * `x48ng/src/core/registers.c` — entries marked "-1" in the C source
+ * ("use P register") correspond to the @ref FC_P / @ref FC_WP codes here.
+ *
+ * Codes 8..14 are mirrors of codes 0..6 (same start/end), preserved for
+ * bit-exact opcode decoding fidelity.
+ */
 `include "saturn_pkg.vh"
 
+/**
+ * @brief Saturn field decoder (combinational).
+ *
+ * @param code      5-bit field code; see saturn_pkg.vh `FC_*` constants.
+ * @param p         Current P register (0..15). Used by @ref FC_P and
+ *                  @ref FC_WP to compute a P-dependent slice.
+ * @param start_nib First in-field nibble index (inclusive, 0..15).
+ * @param end_nib   Last  in-field nibble index (inclusive, 0..15).
+ */
 module saturn_field (
-    input  wire [4:0] code,      // field code 0..18
-    input  wire [3:0] p,         // P register (0..15)
-    output reg  [3:0] start_nib, // inclusive
-    output reg  [3:0] end_nib    // inclusive
+    input  wire [4:0] code,      ///< field code 0..18 (see FC_* in saturn_pkg.vh)
+    input  wire [3:0] p,         ///< P register value (used by FC_P / FC_WP)
+    output reg  [3:0] start_nib, ///< inclusive start of field
+    output reg  [3:0] end_nib    ///< inclusive end of field
 );
     always @(*) begin
         case (code)

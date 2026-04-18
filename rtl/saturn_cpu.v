@@ -1,45 +1,60 @@
-// saturn_cpu.v — synthesizable top for the HP Saturn CPU.
-//
-// All combinational instruction dispatch lives in saturn_exec.v; this file
-// holds architectural state registers, the fetch-buffer, the memory-bus
-// FSM, and plumbing between them. No #0 delays, no tasks — every always
-// block is either a pure posedge-clk sequential or a plain @* combinational.
-//
-// FSM:
-//   S_IDLE  ──step──▶ S_FETCH
-//   S_FETCH ── 32 nibbles into ib[0..31] ──▶ S_EXEC
-//   S_EXEC  ── latches next_* from saturn_exec ──▶
-//       do_memop ? S_MEMW / S_MEMR : S_DONE
-//   S_MEMW / S_MEMR ── one nibble per cycle ──▶ S_DONE
-//   S_DONE  ──▶ S_IDLE (asserts step_done for one cycle)
-//
-// External signal names (regA, regB, regC, regD, regR, D0, D1, P, PC, ST,
-// PSTAT, CARRY, HEXMODE, RSTK, RSTKP, IN_REG, OUT_REG, state, mem_*) are
-// preserved so sim/verilog_core.cpp can read/write them via Verilator's
-// public-flat-rw hierarchy.
+/**
+ * @file saturn_cpu.v
+ * @brief Synthesizable top-level of the HP Saturn CPU.
+ *
+ * This module owns the architectural state (A/B/C/D, R0..R4, D0/D1, PC,
+ * P, ST, PSTAT, CARRY, HEXMODE, return stack, IN/OUT), the fetch buffer,
+ * and the memory-bus FSM. All combinational instruction dispatch lives
+ * in saturn_exec.v — this file just latches the next-state wires the
+ * decoder produces on the cycle the FSM spends in S_EXEC.
+ *
+ * ## FSM
+ *  1. @b S_IDLE  — wait for external `step` pulse.
+ *  2. @b S_FETCH — read 32 nibbles from memory[PC..PC+31] into ib[].
+ *  3. @b S_EXEC  — latch all `*_next` outputs of saturn_exec; go to
+ *                 S_MEMR / S_MEMW if the instruction carried a memop,
+ *                 else S_DONE.
+ *  4. @b S_MEMW / @b S_MEMR — one nibble per cycle, address bumps by 1.
+ *  5. @b S_DONE  — assert `step_done` for one cycle and return to S_IDLE.
+ *
+ * No `#0` delays, no tasks: every always block is either a pure
+ * `posedge clk` sequential or a plain `@*` combinational.
+ *
+ * External signal names (regA, regB, regC, regD, regR, D0, D1, P, PC,
+ * ST, PSTAT, CARRY, HEXMODE, RSTK, RSTKP, IN_REG, OUT_REG, state,
+ * mem_*) are preserved so sim/verilog_core.cpp can read/write them via
+ * Verilator's `--public-flat-rw` hierarchy without path rewriting.
+ */
 `include "saturn_pkg.vh"
 
+/**
+ * @brief Synthesizable HP Saturn CPU core.
+ *
+ * Runs one instruction per external `step` pulse. The memory bus is a
+ * single-port nibble interface owned by the parent (typically a C++
+ * Verilator harness or a simple reg array in a standalone testbench).
+ */
 module saturn_cpu (
-    input  wire        clk,
-    input  wire        rst_n,
-    output reg  [19:0] mem_addr,
-    output reg         mem_we,
-    output reg         mem_re,
-    output reg  [3:0]  mem_wdata,
-    input  wire [3:0]  mem_rdata,
-    // observability (unchanged so tb_cpu / x48_sim don't need rewiring)
-    output wire [19:0] dbg_pc,
-    output wire [63:0] dbg_A, dbg_B, dbg_C, dbg_D,
-    output wire [19:0] dbg_D0, dbg_D1,
-    output wire [3:0]  dbg_P,
-    output wire [3:0]  dbg_ST,
-    output wire [15:0] dbg_PSTAT,
-    output wire        dbg_CARRY,
-    output wire        dbg_HEXMODE,
-    output wire signed [3:0] dbg_RSTKP,
-    output wire [159:0] dbg_RSTK,
-    input  wire        step,
-    output reg         step_done
+    input  wire        clk,       ///< system clock (rising edge)
+    input  wire        rst_n,     ///< active-low async reset
+    output reg  [19:0] mem_addr,  ///< memory address (20-bit nibble address)
+    output reg         mem_we,    ///< write enable (1-cycle pulses during S_MEMW)
+    output reg         mem_re,    ///< read  enable (held during S_FETCH / S_MEMR)
+    output reg  [3:0]  mem_wdata, ///< nibble to write when mem_we is asserted
+    input  wire [3:0]  mem_rdata, ///< nibble read back on the following cycle
+    // ── observability (unchanged so tb_cpu / x48_sim don't need rewiring) ─
+    output wire [19:0] dbg_pc,        ///< live PC
+    output wire [63:0] dbg_A, dbg_B, dbg_C, dbg_D,  ///< working registers
+    output wire [19:0] dbg_D0, dbg_D1,             ///< data pointers
+    output wire [3:0]  dbg_P,                      ///< P register (0..15)
+    output wire [3:0]  dbg_ST,                     ///< status bits {MP,SR,SB,XM}
+    output wire [15:0] dbg_PSTAT,                  ///< program-status 16 bits
+    output wire        dbg_CARRY,                  ///< carry flag
+    output wire        dbg_HEXMODE,                ///< 1 = hex, 0 = decimal
+    output wire signed [3:0] dbg_RSTKP,            ///< return-stack pointer (-1 = empty)
+    output wire [159:0] dbg_RSTK,                  ///< packed RSTK[0..7] each 20b
+    input  wire        step,                       ///< pulse high for 1 cycle to start an instruction
+    output reg         step_done                   ///< asserted high for the cycle that completes an instruction
 );
     // ─────────────────────────────────────────────────────────────
     // Architectural state registers

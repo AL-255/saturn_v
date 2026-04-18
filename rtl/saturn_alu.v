@@ -1,19 +1,41 @@
-// saturn_alu.v — field-based 64-bit ALU for HP Saturn
-// Operands are packed 16 x 4-bit nibbles, [3:0]=nibble0 (LSN).
-// Ref: x48ng registers.c.
+/**
+ * @file saturn_alu.v
+ * @brief Field-based 64-bit ALU for the HP Saturn CPU.
+ *
+ * Operands are 64-bit words interpreted as 16 x 4-bit nibbles with
+ * `[3:0] = nibble 0` (least-significant nibble first). The field-code
+ * input picks a contiguous nibble range; the operation runs only on
+ * those nibbles and `res` preserves input `a`'s out-of-field nibbles.
+ *
+ * Supported operations (see ALUOP_* in saturn_pkg.vh):
+ *  - Arithmetic: ADD, SUB, INC, DEC, NEG1, NEG2, ADDCON, SUBCON
+ *  - Logic:      AND, OR
+ *  - Shift:      SHL, SHR, SHLC, SHRC, SHRB (bit-level, sets SB)
+ *  - Move:       ZERO, COPY, EXCH, PASS
+ *  - Compare:    EQ, NE, LT, GT, LE, GE, ZERQ, NZRQ (drive carry only)
+ *
+ * Decimal (BCD) mode is selected by @p hex_mode=0; arithmetic ops then
+ * wrap at base 10 instead of base 16. ADDCON/SUBCON are unconditionally
+ * HEX, per the C reference's `add_register_constant` semantics.
+ *
+ * Reference: `x48ng/src/core/registers.c`.
+ */
 `include "saturn_pkg.vh"
 
+/**
+ * @brief Combinational 64-bit nibble-field ALU.
+ */
 module saturn_alu (
-    input  wire [63:0] a,
-    input  wire [63:0] b,
-    input  wire [3:0]  p,         // P register (for FC_P / FC_WP / SHL/SHR-n etc.)
-    input  wire [4:0]  field,     // field code
-    input  wire [5:0]  op,        // ALU op code (see saturn_pkg.vh)
-    input  wire        hex_mode,  // 1 = hex (base 16), 0 = decimal (base 10)
-    input  wire        carry_in,  // current saturn.carry (for compares we don't use it)
-    output reg  [63:0] res,       // primary result
-    output reg  [63:0] res_b,     // secondary result (for EXCH)
-    output reg         carry_out
+    input  wire [63:0] a,         ///< first operand (also carries preserved out-of-field nibbles)
+    input  wire [63:0] b,         ///< second operand / shift-in / constant (ADDCON/SUBCON: b[4:0])
+    input  wire [3:0]  p,         ///< P register (for FC_P / FC_WP etc.)
+    input  wire [4:0]  field,     ///< field code (see FC_* in saturn_pkg.vh)
+    input  wire [5:0]  op,        ///< ALU op code (see ALUOP_* in saturn_pkg.vh)
+    input  wire        hex_mode,  ///< 1 = hex (base 16), 0 = decimal (base 10)
+    input  wire        carry_in,  ///< current CPU carry (not used by most ops)
+    output reg  [63:0] res,       ///< primary result (in-field op applied; out-of-field = a)
+    output reg  [63:0] res_b,     ///< secondary result (only meaningful for EXCH)
+    output reg         carry_out  ///< operation-specific carry / compare result
 );
     // Field decode
     wire [3:0] fs, fe;

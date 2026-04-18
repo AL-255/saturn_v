@@ -28,6 +28,10 @@ sim/state
 # Generated block diagrams
 rtl/diagram/
 
+# Generated doxygen output
+docs/html/
+docs/latex/
+
 # HP48 ROM image — licensing is unclear (see x48ng README).
 # Drop your own ROM here; the sim Makefiles look for /rom at repo root.
 /rom

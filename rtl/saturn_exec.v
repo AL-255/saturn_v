@@ -1,51 +1,74 @@
-// saturn_exec.v — pure combinational instruction decoder / executer.
-//
-// One big always-comb block. Takes all current architectural state + the
-// pre-fetched instruction buffer (ib0..ib7) as inputs; drives the ALU
-// control signals (alu_a/b/field/op); and produces *_next values for every
-// state element the FSM can update in a single instruction. The FSM in
-// saturn_cpu.v latches those next values on the cycle it spends in S_EXEC.
-//
-// Dispatch tree mirrors x48ng emulate.c:
-//   top nibble (n0) selects group; some groups sub-dispatch on n1/n2/n3.
-//
-// No tasks, no #0 delays — synthesizable. The ALU sits outside this module
-// (in saturn_cpu); this block just produces its inputs and consumes its
-// outputs via the exposed ports.
+/**
+ * @file saturn_exec.v
+ * @brief Pure combinational instruction decoder and executer for the
+ *        HP Saturn CPU.
+ *
+ * One big `always @*` block. Takes all current architectural state plus
+ * the pre-fetched instruction nibble buffer (ib0..ib23) as inputs,
+ * drives the ALU control signals (alu_a / alu_b / alu_field / alu_op),
+ * consumes `alu_res / alu_res_b / alu_cout`, and produces `*_next`
+ * values for every state element the FSM can update in a single
+ * instruction. The FSM in saturn_cpu.v latches those next values on the
+ * cycle it spends in S_EXEC.
+ *
+ * Dispatch mirrors `x48ng/src/core/emulate.c`:
+ *  - top nibble (n0) picks the opcode group 0x0..0xF
+ *  - some groups sub-dispatch on n1, then n2, then n3
+ *  - LC (group 3) and LA (0x808_2) constant-load instructions unroll a
+ *    16-nibble copy loop over ib[]
+ *
+ * No tasks, no `#0` delays — fully synthesizable. The ALU sits outside
+ * this module (in saturn_cpu) so the combinational chain
+ * @code
+ *   state+ib → alu_a,b,field,op → saturn_alu → alu_res → *_next
+ * @endcode
+ * has a clean feed-forward dependency, no simulator re-evaluation
+ * trickery.
+ */
 `include "saturn_pkg.vh"
 
+/**
+ * @brief Saturn instruction decoder / executer (combinational).
+ *
+ * All outputs are updated in a single `always @*`. For instructions
+ * that don't use the ALU, the ALU outputs are `alu_op=ALUOP_PASS`,
+ * `alu_a=regA_in` so the ALU computes a harmless value that nothing
+ * downstream consumes.
+ */
 module saturn_exec (
     // ── current state ────────────────────────────────────────────────
-    input  wire [19:0] pc_in,
-    input  wire [63:0] regA_in, regB_in, regC_in, regD_in,
-    input  wire [63:0] regR0_in, regR1_in, regR2_in, regR3_in, regR4_in,
-    input  wire [19:0] D0_in, D1_in,
-    input  wire [3:0]  P_in,
-    input  wire [3:0]  ST_in,
-    input  wire [15:0] PSTAT_in,
-    input  wire        CARRY_in,
-    input  wire        HEXMODE_in,
-    input  wire [19:0] RSTK_top_in,
-    input  wire [63:0] IN_REG_in,
-    input  wire [63:0] OUT_REG_in,
+    input  wire [19:0] pc_in,     ///< current PC
+    input  wire [63:0] regA_in, regB_in, regC_in, regD_in,  ///< working regs
+    input  wire [63:0] regR0_in, regR1_in, regR2_in, regR3_in, regR4_in, ///< scratch regs
+    input  wire [19:0] D0_in, D1_in,     ///< data pointers
+    input  wire [3:0]  P_in,             ///< P register
+    input  wire [3:0]  ST_in,            ///< ST status bits
+    input  wire [15:0] PSTAT_in,         ///< 16-bit program-status
+    input  wire        CARRY_in,         ///< carry flag
+    input  wire        HEXMODE_in,       ///< 1=hex, 0=dec
+    input  wire [19:0] RSTK_top_in,      ///< top of return stack (0 if empty)
+    input  wire [63:0] IN_REG_in,        ///< latched IN_REG (keyboard scan)
+    input  wire [63:0] OUT_REG_in,       ///< OUT_REG shadow
 
-    // ── instruction bytes (8 nibbles, PC..PC+7) ──────────────────────
+    // ── instruction bytes (nibbles, PC..PC+23) ───────────────────────
     input  wire [3:0]  ib0, ib1, ib2, ib3, ib4, ib5, ib6, ib7,
-    // Extended fetch buffer for LC constant loads (up to 16 nibbles past n1).
-    // The FSM pre-fetches 32 nibbles; exec only consults the count it needs.
+    ///< @brief extra nibbles for LC / LA constant loads (up to 22-nib ops).
     input  wire [3:0]  ib8,  ib9,  ib10, ib11, ib12, ib13, ib14, ib15,
     input  wire [3:0]  ib16, ib17, ib18, ib19, ib20, ib21, ib22, ib23,
 
     // ── ALU bidirectional interface ──────────────────────────────────
-    output reg  [63:0] alu_a, alu_b,
-    output reg  [4:0]  alu_field,
-    output reg  [5:0]  alu_op,
-    input  wire [63:0] alu_res, alu_res_b,
-    input  wire        alu_cout,
-    input  wire [3:0]  alu_fs, alu_fe,
+    output reg  [63:0] alu_a,     ///< ALU operand a (drives external saturn_alu)
+    output reg  [63:0] alu_b,     ///< ALU operand b
+    output reg  [4:0]  alu_field, ///< ALU field code
+    output reg  [5:0]  alu_op,    ///< ALU op code
+    input  wire [63:0] alu_res,   ///< ALU primary result (combinational)
+    input  wire [63:0] alu_res_b, ///< ALU secondary result (for EXCH)
+    input  wire        alu_cout,  ///< ALU carry / compare output
+    input  wire [3:0]  alu_fs,    ///< decoded field start nibble
+    input  wire [3:0]  alu_fe,    ///< decoded field end nibble
 
-    // ── next-state outputs ───────────────────────────────────────────
-    output reg  [19:0] pc_next,
+    // ── next-state outputs (latched by saturn_cpu on S_EXEC edge) ────
+    output reg  [19:0] pc_next,       ///< next PC
     output reg  [63:0] regA_next, regB_next, regC_next, regD_next,
     output reg  [63:0] regR0_next, regR1_next, regR2_next, regR3_next, regR4_next,
     output reg  [19:0] D0_next, D1_next,
@@ -55,18 +78,18 @@ module saturn_exec (
     output reg         CARRY_next,
     output reg         HEXMODE_next,
     output reg  [63:0] OUT_REG_next,
-    output reg         rstk_push_en,
+    output reg         rstk_push_en,   ///< 1 = push rstk_push_val this step
     output reg  [19:0] rstk_push_val,
-    output reg         rstk_pop_en,
+    output reg         rstk_pop_en,    ///< 1 = pop top of RSTK this step
 
-    // ── memory-op request (consumed by S_MEMR / S_MEMW in the FSM) ──
-    output reg         do_memop,
-    output reg         memop_is_write,
-    output reg  [19:0] memop_addr,
-    output reg  [63:0] memop_data,
-    output reg  [1:0]  memop_dst_reg,
-    output reg  [4:0]  memop_len,
-    output reg  [3:0]  memop_start_nib
+    // ── memory-op request (handed to S_MEMR / S_MEMW in the FSM) ────
+    output reg         do_memop,         ///< 1 = instruction needs a memory transaction
+    output reg         memop_is_write,   ///< 1 = store (reg → mem), 0 = recall
+    output reg  [19:0] memop_addr,       ///< base address (nibble-aligned)
+    output reg  [63:0] memop_data,       ///< full reg snapshot (store only)
+    output reg  [1:0]  memop_dst_reg,    ///< destination reg for recall: 0=A, 2=C
+    output reg  [4:0]  memop_len,        ///< number of nibbles to transfer
+    output reg  [3:0]  memop_start_nib   ///< starting nibble offset within reg
 );
 
     // ── helpers ──────────────────────────────────────────────────────
